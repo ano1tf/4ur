@@ -16,6 +16,12 @@ import { SpotlightCard } from "@/components/site/spotlight-card";
 import { ActionButton } from "@/components/site/action-button";
 import { getContentBundle } from "@/lib/content";
 
+/**
+ * Rendu à la demande : les tarifs sont publiés depuis le Dashboard et doivent
+ * apparaître dès la requête suivante (voir `src/lib/content.ts`).
+ */
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Pôle Web — création de sites sur mesure",
   description:

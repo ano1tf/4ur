@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { BUNDLE_HINT, bundleSchema } from "@/lib/content-schema";
+import { bundleSchema, describeBundleIssue } from "@/lib/content-schema";
 import { getContentBundleFresh, saveContentBundle } from "@/lib/content";
 import { isAuthorized } from "@/lib/dev-auth";
 import { checkLimit } from "@/lib/rate-limit";
@@ -46,7 +46,10 @@ export async function PUT(request: Request) {
     const body = await request.json();
     const parsed = bundleSchema.safeParse(body);
     if (!parsed.success) {
-      return NextResponse.json({ ok: false, error: BUNDLE_HINT }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: describeBundleIssue(parsed.error) },
+        { status: 400 }
+      );
     }
     await saveContentBundle(parsed.data);
     return NextResponse.json({ ok: true });

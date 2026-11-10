@@ -1,16 +1,18 @@
 import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
-import { CASE_STUDIES } from "@/lib/case-studies";
+import type { CaseStudy } from "@/lib/case-studies";
 import { Reveal } from "./reveal";
 import { SpotlightCard } from "./spotlight-card";
 import { ActionButton, EyebrowPill } from "./action-button";
 
 /**
- * Aperçu minimaliste de 3 études de cas sur la page d'accueil,
+ * Aperçu minimaliste des 3 premières études de cas sur la page d'accueil,
  * orientant vers la galerie complète `/realisations`.
+ * L'ordre est celui défini dans le Dashboard (onglet « Réalisations »).
  */
-export function FeaturedWorks() {
-  const featured = CASE_STUDIES.slice(0, 3);
+export function FeaturedWorks({ items = [] }: { items?: CaseStudy[] }) {
+  const featured = items.slice(0, 3);
+  if (featured.length === 0) return null;
 
   return (
     <section className="section-beam relative border-t border-white/[0.07] py-28 sm:py-36">

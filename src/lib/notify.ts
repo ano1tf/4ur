@@ -63,7 +63,7 @@ export async function notifyLead(lead: LeadNotification): Promise<void> {
 
   if (!to && !webhook) {
     console.warn(
-      "[contact] aucune notification externe configurée — la demande est conservée en mémoire /tmp."
+      "[contact] aucune notification externe configurée — la demande n'est conservée qu'en base (persistante uniquement avec Turso)."
     );
     return;
   }

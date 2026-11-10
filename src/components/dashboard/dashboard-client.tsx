@@ -12,6 +12,7 @@ import {
   BellOff,
   CheckCircle2,
   Clock,
+  Database,
   Download,
   Eye,
   EyeOff,
@@ -50,6 +51,9 @@ import {
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { DEFAULT_BUNDLE, type ContentBundle } from "@/lib/content-defaults";
+import type { CaseStudy } from "@/lib/case-studies";
+import { CaseStudiesEditor } from "./case-studies-editor";
+import { Field, LinesField, TextAreaField } from "./fields";
 
 /* -------------------------------------------------------------------------- */
 /*                                    Types                                   */
@@ -57,7 +61,7 @@ import { DEFAULT_BUNDLE, type ContentBundle } from "@/lib/content-defaults";
 
 type AuthState = "checking" | "locked" | "unlocked";
 type MainTab = "stats" | "monitor" | "leads" | "content";
-type ContentSubTab = "plans" | "security" | "options" | "recurring";
+type ContentSubTab = "plans" | "security" | "options" | "recurring" | "works";
 type RangeKey = "24h" | "7d" | "30d";
 type NotifyMode = "every_ping" | "alert_only" | "silent";
 
@@ -76,6 +80,11 @@ interface StatsPayload {
     avgLatencyMs: number;
     checksCount: number;
     serverUptimeSec: number;
+  };
+  database?: {
+    driver: "turso" | "sqlite-file" | "sqlite-memory";
+    location: string;
+    persistent: boolean;
   };
   timeline: { label: string; views: number; visitors: number }[];
   topPages: { path: string; label: string; views: number; share: number }[];
@@ -186,8 +195,27 @@ const isServiceCardArray = (v: unknown): boolean =>
       typeof c.body === "string"
   );
 
-function isValidBundle(value: unknown): value is ContentBundle {
-  if (!value || typeof value !== "object") return false;
+const isCaseStudyArray = (v: unknown): v is CaseStudy[] =>
+  Array.isArray(v) &&
+  v.length <= 30 &&
+  v.every(
+    (c) =>
+      !!c &&
+      typeof c.slug === "string" &&
+      typeof c.client === "string" &&
+      typeof c.headline === "string" &&
+      (c.category === "web" || c.category === "security" || c.category === "saas") &&
+      Array.isArray(c.metrics) &&
+      isStringArray(c.stack) &&
+      isStringArray(c.deliverables)
+  );
+
+/**
+ * Valide un export JSON et le complète : les fichiers exportés avant l'ajout des
+ * réalisations (sans `caseStudies`) restent importables — la liste actuelle est conservée.
+ */
+function parseImportedBundle(value: unknown, current: ContentBundle): ContentBundle | null {
+  if (!value || typeof value !== "object") return null;
   const b = value as Record<string, unknown>;
   const plansOk =
     Array.isArray(b.plans) &&
@@ -214,79 +242,15 @@ function isValidBundle(value: unknown): value is ContentBundle {
         typeof o.pitch === "string" &&
         isStringArray(o.features)
     );
-  return Boolean(
-    plansOk && offersOk && isServiceCardArray(b.webOptions) && isServiceCardArray(b.recurring)
-  );
+  if (!(plansOk && offersOk && isServiceCardArray(b.webOptions) && isServiceCardArray(b.recurring))) {
+    return null;
+  }
+  if (b.caseStudies !== undefined && !isCaseStudyArray(b.caseStudies)) return null;
+  return {
+    ...(b as unknown as Omit<ContentBundle, "caseStudies">),
+    caseStudies: (b.caseStudies as CaseStudy[] | undefined) ?? current.caseStudies,
+  };
 }
-
-/* ---------------------------- Sous-composants UI --------------------------- */
-
-function Field({
-  label,
-  value,
-  onChange,
-  placeholder,
-  mono,
-  type = "text",
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  mono?: boolean;
-  type?: string;
-}) {
-  return (
-    <label className="block">
-      <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-        {label}
-      </span>
-      <input
-        type={type}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        className={cn(
-          "mt-1.5 h-10 w-full rounded-md border border-white/12 bg-[#0b0b0b] px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/40 focus:border-white/40",
-          mono && "font-mono text-[13px]"
-        )}
-      />
-    </label>
-  );
-}
-
-function TextAreaField({
-  label,
-  value,
-  onChange,
-  rows = 4,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  rows?: number;
-}) {
-  return (
-    <label className="block">
-      <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-        {label}
-      </span>
-      <textarea
-        value={value}
-        rows={rows}
-        onChange={(e) => onChange(e.target.value)}
-        className="mt-1.5 w-full resize-y rounded-md border border-white/12 bg-[#0b0b0b] px-3 py-2 text-[13px] leading-relaxed text-foreground outline-none transition-colors placeholder:text-muted-foreground/40 focus:border-white/40"
-      />
-    </label>
-  );
-}
-
-const linesToArray = (s: string): string[] =>
-  s
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-const arrayToLines = (a: string[]): string => a.join("\n");
 
 /* -------------------------------------------------------------------------- */
 /*                             Composant Principal                            */
@@ -802,11 +766,12 @@ export function DashboardClient() {
 
   async function importBundle(file: File) {
     try {
-      const parsed: unknown = JSON.parse(await file.text());
-      if (!isValidBundle(parsed)) {
+      const parsed = parseImportedBundle(JSON.parse(await file.text()), bundle);
+      if (!parsed) {
         toast({
           title: "Fichier JSON invalide",
-          description: "Structure attendue : 4 sections de 3 éléments.",
+          description:
+            "Structure attendue : 4 sections tarifaires de 3 éléments (+ réalisations optionnelles).",
           variant: "destructive",
         });
         return;
@@ -1008,6 +973,28 @@ export function DashboardClient() {
           <h1 className="mt-2 font-display text-2xl font-extrabold tracking-tight sm:text-3xl">
             Tableau de bord 4UR
           </h1>
+          {stats?.database && (
+            <p
+              className={cn(
+                "mt-2 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em]",
+                stats.database.persistent
+                  ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+                  : "border-amber-400/30 bg-amber-400/10 text-amber-300"
+              )}
+              title={
+                stats.database.persistent
+                  ? `Données persistantes · ${stats.database.location}`
+                  : `Base volatile (${stats.database.location}) : les modifications seront perdues au prochain redémarrage. Configurez TURSO_DATABASE_URL + TURSO_AUTH_TOKEN.`
+              }
+            >
+              <Database className="size-3" />
+              {stats.database.driver === "turso"
+                ? "Base Turso · persistante"
+                : stats.database.persistent
+                  ? "SQLite local · persistante"
+                  : "SQLite volatile · pertes au redémarrage"}
+            </p>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
@@ -1961,6 +1948,7 @@ export function DashboardClient() {
                   { id: "security", label: "Offres Sécurité" },
                   { id: "options", label: "Options Web" },
                   { id: "recurring", label: "Services récurrents" },
+                  { id: "works", label: "Réalisations" },
                 ] as const
               ).map((sub) => (
                 <button
@@ -2146,17 +2134,17 @@ export function DashboardClient() {
                       )
                     }
                   />
-                  <TextAreaField
+                  <LinesField
                     label="Caractéristiques (une par ligne)"
-                    value={arrayToLines(plan.features)}
+                    value={plan.features}
                     rows={5}
-                    onChange={(v) =>
+                    onChange={(lines) =>
                       setBundle((b) =>
                         b
                           ? {
                               ...b,
                               plans: b.plans.map((p, idx) =>
-                                idx === i ? { ...p, features: linesToArray(v) } : p
+                                idx === i ? { ...p, features: lines } : p
                               ),
                             }
                           : b
@@ -2228,17 +2216,17 @@ export function DashboardClient() {
                       )
                     }
                   />
-                  <TextAreaField
+                  <LinesField
                     label="Inclus (une ligne par point)"
-                    value={arrayToLines(offer.features)}
+                    value={offer.features}
                     rows={4}
-                    onChange={(v) =>
+                    onChange={(lines) =>
                       setBundle((b) =>
                         b
                           ? {
                               ...b,
                               securityOffers: b.securityOffers.map((o, idx) =>
-                                idx === i ? { ...o, features: linesToArray(v) } : o
+                                idx === i ? { ...o, features: lines } : o
                               ),
                             }
                           : b
@@ -2319,6 +2307,13 @@ export function DashboardClient() {
                 );
               }
             )}
+
+          {contentSubTab === "works" && (
+            <CaseStudiesEditor
+              items={bundle.caseStudies}
+              onChange={(next) => setBundle((b) => (b ? { ...b, caseStudies: next } : b))}
+            />
+          )}
         </div>
       )}
     </div>

@@ -8,6 +8,7 @@ import { CtaBanner } from "@/components/site/cta-banner";
 import { Reveal } from "@/components/site/reveal";
 import { SpotlightCard } from "@/components/site/spotlight-card";
 import { EyebrowPill } from "@/components/site/action-button";
+import { getContentBundle } from "@/lib/content";
 
 const STANDARDS = [
   {
@@ -27,13 +28,18 @@ const STANDARDS = [
   },
 ];
 
-export default function HomePage() {
+/** Rendu à la demande : la sélection de réalisations est éditable depuis le Dashboard. */
+export const dynamic = "force-dynamic";
+
+export default async function HomePage() {
+  const { caseStudies } = await getContentBundle();
+
   return (
     <>
       <Hero3D />
       <MarqueeTicker />
       <Poles />
-      <FeaturedWorks />
+      <FeaturedWorks items={caseStudies} />
 
       {/* Section 03 — Standards & Portails vers nos expériences interactives */}
       <section className="section-beam relative border-t border-white/[0.07] py-28 sm:py-36">

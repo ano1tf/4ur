@@ -1,3 +1,12 @@
+/**
+ * Études de cas (« Réalisations »).
+ *
+ * ⚠️ Fichier importable côté client (aucun import serveur) : il est utilisé par
+ * la galerie publique, la page d'accueil et l'éditeur du Dashboard.
+ * La liste ci-dessous sert de valeur par défaut tant que rien n'a été publié
+ * depuis le Dashboard (onglet « Contenu & Tarifs » → « Réalisations »).
+ */
+
 export type CaseCategory = "web" | "security" | "saas";
 
 export interface CaseStudy {
@@ -19,7 +28,7 @@ export interface CaseStudy {
   deliverables: string[];
 }
 
-export const CASE_STUDIES: CaseStudy[] = [
+export const DEFAULT_CASE_STUDIES: CaseStudy[] = [
   {
     slug: "kova-finance",
     client: "Kova Finance",
@@ -199,3 +208,78 @@ export const CASE_STUDIES: CaseStudy[] = [
     ],
   },
 ];
+
+/* ------------------------------------------------------------------ */
+/*  Métadonnées partagées (public + Dashboard)                        */
+/* ------------------------------------------------------------------ */
+
+export const CASE_CATEGORIES: {
+  id: CaseCategory;
+  label: string;
+  defaultCategoryLabel: string;
+}[] = [
+  { id: "web", label: "Ingénierie Web", defaultCategoryLabel: "Expérience Web & E-commerce" },
+  { id: "security", label: "Cybersécurité", defaultCategoryLabel: "Web & Durcissement Cyber" },
+  { id: "saas", label: "SaaS & Plateformes", defaultCategoryLabel: "Plateforme SaaS & Pentest" },
+];
+
+/** Dégradés prédéfinis pour la « fenêtre » d'aperçu de chaque carte. */
+export const CASE_ACCENT_PRESETS: {
+  id: string;
+  label: string;
+  from: string;
+  to: string;
+}[] = [
+  { id: "platinum", label: "Platine", from: "rgba(255,255,255,0.14)", to: "rgba(113,113,122,0.08)" },
+  { id: "zinc", label: "Zinc", from: "rgba(228,228,231,0.14)", to: "rgba(63,63,70,0.08)" },
+  { id: "emerald", label: "Émeraude", from: "rgba(52,211,153,0.14)", to: "rgba(255,255,255,0.06)" },
+  { id: "sky", label: "Ciel", from: "rgba(125,211,252,0.14)", to: "rgba(255,255,255,0.06)" },
+  { id: "gold", label: "Or", from: "rgba(250,204,21,0.12)", to: "rgba(255,255,255,0.05)" },
+];
+
+/** Transforme un libellé libre en slug URL sûr (`kova-finance`). */
+export function slugifyCaseStudy(input: string): string {
+  return input
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+}
+
+/** Garantit l'unicité d'un slug au sein d'une liste (suffixe -2, -3…). */
+export function uniqueCaseSlug(base: string, taken: Iterable<string>): string {
+  const used = new Set(taken);
+  const root = base || "realisation";
+  if (!used.has(root)) return root;
+  let i = 2;
+  while (used.has(`${root}-${i}`)) i += 1;
+  return `${root}-${i}`;
+}
+
+/** Nouvelle réalisation vierge, prête à être complétée dans le Dashboard. */
+export function createBlankCaseStudy(existing: CaseStudy[] = []): CaseStudy {
+  const preset = CASE_ACCENT_PRESETS[0];
+  return {
+    slug: uniqueCaseSlug(
+      "nouvelle-realisation",
+      existing.map((c) => c.slug)
+    ),
+    client: "Nouveau client",
+    sector: "Secteur · Ville",
+    year: String(new Date().getFullYear()),
+    category: "web",
+    categoryLabel: CASE_CATEGORIES[0].defaultCategoryLabel,
+    headline: "Titre de la réalisation.",
+    summary: "",
+    challenge: "",
+    solution: "",
+    accentFrom: preset.from,
+    accentTo: preset.to,
+    domain: "",
+    metrics: [],
+    stack: [],
+    deliverables: [],
+  };
+}

@@ -12,6 +12,7 @@ import {
   BellOff,
   CheckCircle2,
   Clock,
+  Database,
   Download,
   Eye,
   EyeOff,
@@ -79,6 +80,11 @@ interface StatsPayload {
     avgLatencyMs: number;
     checksCount: number;
     serverUptimeSec: number;
+  };
+  database?: {
+    driver: "turso" | "sqlite-file" | "sqlite-memory";
+    location: string;
+    persistent: boolean;
   };
   timeline: { label: string; views: number; visitors: number }[];
   topPages: { path: string; label: string; views: number; share: number }[];
@@ -967,6 +973,28 @@ export function DashboardClient() {
           <h1 className="mt-2 font-display text-2xl font-extrabold tracking-tight sm:text-3xl">
             Tableau de bord 4UR
           </h1>
+          {stats?.database && (
+            <p
+              className={cn(
+                "mt-2 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em]",
+                stats.database.persistent
+                  ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+                  : "border-amber-400/30 bg-amber-400/10 text-amber-300"
+              )}
+              title={
+                stats.database.persistent
+                  ? `Données persistantes · ${stats.database.location}`
+                  : `Base volatile (${stats.database.location}) : les modifications seront perdues au prochain redémarrage. Configurez TURSO_DATABASE_URL + TURSO_AUTH_TOKEN.`
+              }
+            >
+              <Database className="size-3" />
+              {stats.database.driver === "turso"
+                ? "Base Turso · persistante"
+                : stats.database.persistent
+                  ? "SQLite local · persistante"
+                  : "SQLite volatile · pertes au redémarrage"}
+            </p>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">

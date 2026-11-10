@@ -8,12 +8,13 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     void ensureMonitorStarted();
-    const dbCheck = db.$ping();
+    const dbCheck = await db.$ping();
     return NextResponse.json(
       {
         ok: dbCheck.ok,
         status: dbCheck.ok ? "healthy" : "degraded",
         dbLatencyMs: dbCheck.latencyMs,
+        dbDriver: dbCheck.driver,
         uptimeSec: Math.floor(process.uptime()),
         timestamp: new Date().toISOString(),
       },

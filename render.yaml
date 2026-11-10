@@ -1,13 +1,15 @@
 # ---------------------------------------------------------------------------
 # Déploiement Render — offre SANS disque persistant
 #
-# Conséquence assumée : la base SQLite est recréée à chaque démarrage
-# ("/tmp" est vidé à chaque redémarrage / redéploiement).
+# Persistance des données : renseignez TURSO_DATABASE_URL + TURSO_AUTH_TOKEN
+# (Turso / libSQL, offre gratuite) dans l'onglet Environment de Render.
+#   -> Prix, réalisations, demandes de contact et statistiques survivent alors
+#      aux redémarrages et redéploiements.
+#
+# Sans Turso, repli automatique sur SQLite dans /tmp, vidé à chaque redémarrage :
 #   -> Les prix modifiés depuis le dashboard repartent des valeurs par défaut.
 #   -> Les demandes de contact ne survivent pas non plus : la notification
-#      e-mail / webhook est donc OBLIGATOIRE (sinon vous perdez les leads).
-# Le contenu durable se gère dans le code (src/lib/content-defaults.ts) ou via
-# l'export/import JSON du dashboard.
+#      e-mail / webhook est alors OBLIGATOIRE (sinon vous perdez les leads).
 # ---------------------------------------------------------------------------
 services:
   - type: web
@@ -34,6 +36,10 @@ services:
         value: "every_ping"
 
       # --- Secrets : à saisir dans le dashboard Render (jamais dans Git) ---
+      - key: TURSO_DATABASE_URL
+        sync: false # libsql://<base>-<org>.turso.io — active la persistance
+      - key: TURSO_AUTH_TOKEN
+        sync: false # turso db tokens create <base>
       - key: DASHBOARD_PASSWORD
         sync: false
       - key: DEV_PANEL_PIN

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, getDbInfo } from "@/lib/db";
 import { isAuthorized } from "@/lib/dev-auth";
 import { ensureMonitorStarted, getMonitorRuntimeStatus } from "@/lib/monitor";
 
@@ -233,6 +233,7 @@ export async function GET(request: Request) {
           checksCount: recentPings.length,
           serverUptimeSec: monitorRuntime.uptimeSeconds,
         },
+        database: await getDbInfo(),
         timeline,
         topPages,
         devices,

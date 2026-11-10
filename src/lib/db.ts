@@ -3,14 +3,23 @@ import "server-only";
 import { randomBytes } from "crypto";
 import { mkdirSync } from "fs";
 import { dirname, isAbsolute, resolve } from "path";
+import { createClient as createLibsqlClient, type Client as LibsqlClient } from "@libsql/client/web";
 
 /**
- * Couche SQLite native haute performance compatible à la fois :
- * - avec `bun:sqlite` en production sur Render (`runtime: bun`)
- * - avec `node:sqlite` (`DatabaseSync`, intégré à Node.js >= 22.5)
+ * Couche d'accès données — deux pilotes interchangeables derrière une même API :
  *
- * Aucun binaire externe à télécharger au démarrage, mode WAL activé,
- * schéma identique à `prisma/schema.prisma` créé automatiquement.
+ * 1. **Turso / libSQL (distant, persistant)** — activé dès que `TURSO_DATABASE_URL`
+ *    est défini (ou que `DATABASE_URL` commence par `libsql://`, `https://` ou `wss://`).
+ *    Transport HTTP pur (`@libsql/client/web`) : aucun binaire natif, fonctionne
+ *    à l'identique sous Node et Bun, y compris dans le build standalone Render.
+ *    → Les prix, réalisations, demandes de contact et statistiques survivent aux
+ *      redémarrages, même sans disque persistant.
+ *
+ * 2. **SQLite local (fichier ou mémoire)** — repli automatique en développement et
+ *    quand Turso n'est pas configuré : `bun:sqlite` sous Bun, `node:sqlite` sous
+ *    Node ≥ 22.5. Mode WAL, schéma créé automatiquement.
+ *
+ * Le schéma SQL est identique à `prisma/schema.prisma` et créé au premier accès.
  */
 
 export interface SiteContentRecord {
@@ -56,19 +65,65 @@ export interface MonitorPingLogRecord {
   createdAt: Date;
 }
 
+export type DbDriver = "turso" | "sqlite-file" | "sqlite-memory";
+
+export interface DbInfo {
+  driver: DbDriver;
+  /** Emplacement anonymisé (hôte Turso ou chemin du fichier). */
+  location: string;
+  /** `true` si les données survivent à un redémarrage du processus. */
+  persistent: boolean;
+}
+
 type SqlParam = string | number | null;
 
 interface RawSqlAdapter {
-  exec(sql: string): void;
-  all<T = Record<string, unknown>>(sql: string, params?: SqlParam[]): T[];
-  get<T = Record<string, unknown>>(sql: string, params?: SqlParam[]): T | undefined;
-  run(sql: string, params?: SqlParam[]): void;
+  exec(sql: string): Promise<void>;
+  all<T = Record<string, unknown>>(sql: string, params?: SqlParam[]): Promise<T[]>;
+  get<T = Record<string, unknown>>(sql: string, params?: SqlParam[]): Promise<T | undefined>;
+  run(sql: string, params?: SqlParam[]): Promise<void>;
 }
 
 function generateId(): string {
   const ts = Date.now().toString(36);
   const rand = randomBytes(8).toString("hex");
   return `c${ts}${rand}`;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                         Configuration & détection                          */
+/* -------------------------------------------------------------------------- */
+
+const REMOTE_PROTOCOLS = ["libsql:", "https:", "wss:", "http:", "ws:"];
+
+interface TursoConfig {
+  url: string;
+  authToken?: string;
+}
+
+/** Lit la configuration Turso depuis l'environnement (ou `null` si absente). */
+function resolveTursoConfig(): TursoConfig | null {
+  const explicit = (process.env.TURSO_DATABASE_URL || "").trim();
+  const generic = (process.env.DATABASE_URL || "").trim();
+  const candidate = explicit || generic;
+  if (!candidate) return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (!REMOTE_PROTOCOLS.includes(parsed.protocol)) return null;
+
+  // Jeton : variable dédiée, ou `?authToken=` dans l'URL (format accepté par Turso).
+  const fromUrl = parsed.searchParams.get("authToken") ?? undefined;
+  parsed.searchParams.delete("authToken");
+  const authToken =
+    (process.env.TURSO_AUTH_TOKEN || process.env.DATABASE_AUTH_TOKEN || "").trim() ||
+    fromUrl;
+
+  return { url: parsed.toString().replace(/\?$/, ""), authToken };
 }
 
 function resolveSqlitePath(): string {
@@ -97,6 +152,50 @@ function resolveSqlitePath(): string {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/*                            Pilote 1 — Turso / libSQL                        */
+/* -------------------------------------------------------------------------- */
+
+function openTursoAdapter(config: TursoConfig): RawSqlAdapter {
+  const client: LibsqlClient = createLibsqlClient({
+    url: config.url,
+    authToken: config.authToken,
+    intMode: "number",
+  });
+
+  // Les entiers JS partent en « float » dans le protocole Hrana : on les convertit
+  // en BigInt pour qu'ils soient stockés en INTEGER (booléens, compteurs, LIMIT…).
+  const toArgs = (params: SqlParam[]): (string | number | bigint | null)[] =>
+    params.map((p) => (typeof p === "number" && Number.isInteger(p) ? BigInt(p) : p));
+
+  const toObjects = <T>(rs: { columns: string[]; rows: unknown[] }): T[] =>
+    rs.rows.map((row) => {
+      const r = row as Record<string, unknown> & ArrayLike<unknown>;
+      const obj: Record<string, unknown> = {};
+      rs.columns.forEach((col, i) => {
+        obj[col] = r[col] !== undefined ? r[col] : r[i];
+      });
+      return obj as T;
+    });
+
+  return {
+    exec: async (sql) => {
+      await client.executeMultiple(sql);
+    },
+    all: async <T>(sql: string, params: SqlParam[] = []) =>
+      toObjects<T>(await client.execute({ sql, args: toArgs(params) })),
+    get: async <T>(sql: string, params: SqlParam[] = []) =>
+      toObjects<T>(await client.execute({ sql, args: toArgs(params) }))[0],
+    run: async (sql: string, params: SqlParam[] = []) => {
+      await client.execute({ sql, args: toArgs(params) });
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                 Pilote 2 — SQLite local (bun:sqlite / node:sqlite)          */
+/* -------------------------------------------------------------------------- */
+
 function openSqliteAtPath(dbPath: string): RawSqlAdapter {
   const getBuiltin = (
     process as unknown as { getBuiltinModule?: (id: string) => unknown }
@@ -122,12 +221,12 @@ function openSqliteAtPath(dbPath: string): RawSqlAdapter {
     };
     const instance = new Database(dbPath, { create: true });
     return {
-      exec: (sql) => instance.exec(sql),
-      all: <T>(sql: string, params: SqlParam[] = []) =>
+      exec: async (sql) => instance.exec(sql),
+      all: async <T>(sql: string, params: SqlParam[] = []) =>
         instance.query(sql).all(...params) as T[],
-      get: <T>(sql: string, params: SqlParam[] = []) =>
+      get: async <T>(sql: string, params: SqlParam[] = []) =>
         (instance.query(sql).get(...params) as T | null | undefined) ?? undefined,
-      run: (sql: string, params: SqlParam[] = []) => {
+      run: async (sql: string, params: SqlParam[] = []) => {
         instance.query(sql).run(...params);
       },
     };
@@ -145,28 +244,20 @@ function openSqliteAtPath(dbPath: string): RawSqlAdapter {
   };
   const instance = new sqliteMod.DatabaseSync(dbPath);
   return {
-    exec: (sql) => instance.exec(sql),
-    all: <T>(sql: string, params: SqlParam[] = []) =>
+    exec: async (sql) => instance.exec(sql),
+    all: async <T>(sql: string, params: SqlParam[] = []) =>
       instance.prepare(sql).all(...params) as T[],
-    get: <T>(sql: string, params: SqlParam[] = []) =>
+    get: async <T>(sql: string, params: SqlParam[] = []) =>
       instance.prepare(sql).get(...params) as T | undefined,
-    run: (sql: string, params: SqlParam[] = []) => {
+    run: async (sql: string, params: SqlParam[] = []) => {
       instance.prepare(sql).run(...params);
     },
   };
 }
 
-function openAdapter(dbPath: string): RawSqlAdapter {
-  try {
-    return openSqliteAtPath(dbPath);
-  } catch (err) {
-    console.warn(
-      `[db] Ouverture sur ${dbPath} impossible, bascule automatique en RAM (:memory:) :`,
-      err
-    );
-    return openSqliteAtPath(":memory:");
-  }
-}
+/* -------------------------------------------------------------------------- */
+/*                               Schéma & bootstrap                           */
+/* -------------------------------------------------------------------------- */
 
 const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -224,20 +315,110 @@ CREATE TABLE IF NOT EXISTS "MonitorPingLog" (
 CREATE INDEX IF NOT EXISTS "MonitorPingLog_createdAt_idx" ON "MonitorPingLog"("createdAt");
 `;
 
-const globalForDb = globalThis as unknown as { __4urSqlAdapter?: RawSqlAdapter };
+interface DbState {
+  adapter: RawSqlAdapter;
+  info: DbInfo;
+}
 
-function sql(): RawSqlAdapter {
-  if (!globalForDb.__4urSqlAdapter) {
-    const adapter = openAdapter(resolveSqlitePath());
-    try {
-      adapter.exec(PRAGMA_SQL);
-    } catch {
-      /* ignoré en mode :memory: */
-    }
-    adapter.exec(SCHEMA_SQL);
-    globalForDb.__4urSqlAdapter = adapter;
+const globalForDb = globalThis as unknown as {
+  __4urDbState?: Promise<DbState>;
+};
+
+function describeLocation(url: string): string {
+  try {
+    return new URL(url).host || url;
+  } catch {
+    return url;
   }
-  return globalForDb.__4urSqlAdapter;
+}
+
+async function bootstrap(): Promise<DbState> {
+  const turso = resolveTursoConfig();
+
+  if (turso) {
+    const adapter = openTursoAdapter(turso);
+    try {
+      await adapter.exec(SCHEMA_SQL);
+      console.info(`[db] Turso connecté (${describeLocation(turso.url)}).`);
+      return {
+        adapter,
+        info: { driver: "turso", location: describeLocation(turso.url), persistent: true },
+      };
+    } catch (err) {
+      console.error(
+        "[db] Connexion Turso impossible, bascule sur SQLite local (données NON persistantes) :",
+        err
+      );
+    }
+  }
+
+  const dbPath = resolveSqlitePath();
+  let adapter: RawSqlAdapter;
+  let effectivePath = dbPath;
+  try {
+    adapter = openSqliteAtPath(dbPath);
+  } catch (err) {
+    console.warn(
+      `[db] Ouverture sur ${dbPath} impossible, bascule automatique en RAM (:memory:) :`,
+      err
+    );
+    adapter = openSqliteAtPath(":memory:");
+    effectivePath = ":memory:";
+  }
+  try {
+    await adapter.exec(PRAGMA_SQL);
+  } catch {
+    /* ignoré en mode :memory: */
+  }
+  await adapter.exec(SCHEMA_SQL);
+
+  const memory = effectivePath === ":memory:";
+  return {
+    adapter,
+    info: {
+      driver: memory ? "sqlite-memory" : "sqlite-file",
+      location: effectivePath,
+      // Un fichier dans /tmp (cas Render sans disque) ne survit pas à un redéploiement.
+      persistent: !memory && !effectivePath.startsWith("/tmp/"),
+    },
+  };
+}
+
+function state(): Promise<DbState> {
+  if (!globalForDb.__4urDbState) {
+    globalForDb.__4urDbState = bootstrap().catch((err) => {
+      // Permet une nouvelle tentative au prochain appel plutôt qu'un échec figé.
+      globalForDb.__4urDbState = undefined;
+      throw err;
+    });
+  }
+  return globalForDb.__4urDbState;
+}
+
+async function run(sql: string, params: SqlParam[] = []): Promise<void> {
+  const { adapter } = await state();
+  await adapter.run(sql, params);
+}
+
+async function all<T = Record<string, unknown>>(
+  sql: string,
+  params: SqlParam[] = []
+): Promise<T[]> {
+  const { adapter } = await state();
+  return adapter.all<T>(sql, params);
+}
+
+async function get<T = Record<string, unknown>>(
+  sql: string,
+  params: SqlParam[] = []
+): Promise<T | undefined> {
+  const { adapter } = await state();
+  return adapter.get<T>(sql, params);
+}
+
+/** Pilote effectivement utilisé (pour /api/health et le Dashboard). */
+export async function getDbInfo(): Promise<DbInfo> {
+  return (await state()).info;
 }
 
 const toDate = (v: unknown): Date =>
@@ -299,7 +480,7 @@ function mapPingRow(r: Record<string, unknown>): MonitorPingLogRecord {
 export const db = {
   siteContent: {
     async findUnique(args: { where: { key: string } }): Promise<SiteContentRecord | null> {
-      const row = sql().get<Record<string, unknown>>(
+      const row = await get<Record<string, unknown>>(
         `SELECT "key", "value", "updatedAt" FROM "SiteContent" WHERE "key" = ? LIMIT 1`,
         [args.where.key]
       );
@@ -317,7 +498,7 @@ export const db = {
       const keys = args?.where?.key?.in;
       if (keys && keys.length > 0) {
         const placeholders = keys.map(() => "?").join(", ");
-        const rows = sql().all<Record<string, unknown>>(
+        const rows = await all<Record<string, unknown>>(
           `SELECT "key", "value", "updatedAt" FROM "SiteContent" WHERE "key" IN (${placeholders})`,
           keys
         );
@@ -327,7 +508,7 @@ export const db = {
           updatedAt: toDate(r.updatedAt),
         }));
       }
-      const rows = sql().all<Record<string, unknown>>(
+      const rows = await all<Record<string, unknown>>(
         `SELECT "key", "value", "updatedAt" FROM "SiteContent"`
       );
       return rows.map((r) => ({
@@ -343,7 +524,7 @@ export const db = {
       create: { key: string; value: string };
     }): Promise<SiteContentRecord> {
       const nowIso = new Date().toISOString();
-      sql().run(
+      await run(
         `INSERT INTO "SiteContent" ("key", "value", "updatedAt")
          VALUES (?, ?, ?)
          ON CONFLICT("key") DO UPDATE SET "value" = excluded."value", "updatedAt" = excluded."updatedAt"`,
@@ -379,7 +560,7 @@ export const db = {
         consent = false,
       } = args.data;
 
-      sql().run(
+      await run(
         `INSERT INTO "ContactRequest" ("id", "name", "email", "company", "subject", "budget", "message", "source", "consent", "createdAt")
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [id, name, email, company, subject, budget, message, source, consent ? 1 : 0, nowIso]
@@ -410,11 +591,11 @@ export const db = {
       const gte = args?.where?.createdAt?.gte;
 
       const rows = gte
-        ? sql().all<Record<string, unknown>>(
+        ? await all<Record<string, unknown>>(
             `SELECT * FROM "ContactRequest" WHERE "createdAt" >= ? ORDER BY "createdAt" ${dir} LIMIT ?`,
             [gte.toISOString(), limit]
           )
-        : sql().all<Record<string, unknown>>(
+        : await all<Record<string, unknown>>(
             `SELECT * FROM "ContactRequest" ORDER BY "createdAt" ${dir} LIMIT ?`,
             [limit]
           );
@@ -425,16 +606,16 @@ export const db = {
     async count(args?: { where?: { createdAt?: { gte?: Date } } }): Promise<number> {
       const gte = args?.where?.createdAt?.gte;
       const row = gte
-        ? sql().get<{ c: number }>(
+        ? await get<{ c: number }>(
             `SELECT COUNT(*) AS c FROM "ContactRequest" WHERE "createdAt" >= ?`,
             [gte.toISOString()]
           )
-        : sql().get<{ c: number }>(`SELECT COUNT(*) AS c FROM "ContactRequest"`);
+        : await get<{ c: number }>(`SELECT COUNT(*) AS c FROM "ContactRequest"`);
       return Number(row?.c ?? 0);
     },
 
     async delete(args: { where: { id: string } }): Promise<void> {
-      sql().run(`DELETE FROM "ContactRequest" WHERE "id" = ?`, [args.where.id]);
+      await run(`DELETE FROM "ContactRequest" WHERE "id" = ?`, [args.where.id]);
     },
   },
 
@@ -458,7 +639,7 @@ export const db = {
         visitorHash,
       } = args.data;
 
-      sql().run(
+      await run(
         `INSERT INTO "PageView" ("id", "path", "referrer", "device", "browser", "visitorHash", "createdAt")
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [id, path, referrer, device, browser, visitorHash, nowIso]
@@ -466,7 +647,7 @@ export const db = {
 
       // Garde la base légère sur la durée (max 25 000 vues conservées)
       if (Math.random() < 0.02) {
-        sql().run(
+        await run(
           `DELETE FROM "PageView" WHERE "id" NOT IN (
              SELECT "id" FROM "PageView" ORDER BY "createdAt" DESC LIMIT 25000
            )`
@@ -494,11 +675,11 @@ export const db = {
       const gte = args?.where?.createdAt?.gte;
 
       const rows = gte
-        ? sql().all<Record<string, unknown>>(
+        ? await all<Record<string, unknown>>(
             `SELECT * FROM "PageView" WHERE "createdAt" >= ? ORDER BY "createdAt" ${dir} LIMIT ?`,
             [gte.toISOString(), limit]
           )
-        : sql().all<Record<string, unknown>>(
+        : await all<Record<string, unknown>>(
             `SELECT * FROM "PageView" ORDER BY "createdAt" ${dir} LIMIT ?`,
             [limit]
           );
@@ -509,16 +690,16 @@ export const db = {
     async count(args?: { where?: { createdAt?: { gte?: Date } } }): Promise<number> {
       const gte = args?.where?.createdAt?.gte;
       const row = gte
-        ? sql().get<{ c: number }>(
+        ? await get<{ c: number }>(
             `SELECT COUNT(*) AS c FROM "PageView" WHERE "createdAt" >= ?`,
             [gte.toISOString()]
           )
-        : sql().get<{ c: number }>(`SELECT COUNT(*) AS c FROM "PageView"`);
+        : await get<{ c: number }>(`SELECT COUNT(*) AS c FROM "PageView"`);
       return Number(row?.c ?? 0);
     },
 
     async deleteMany(): Promise<void> {
-      sql().run(`DELETE FROM "PageView"`);
+      await run(`DELETE FROM "PageView"`);
     },
   },
 
@@ -550,7 +731,7 @@ export const db = {
         errorMessage = null,
       } = args.data;
 
-      sql().run(
+      await run(
         `INSERT INTO "MonitorPingLog" (
            "id", "targetUrl", "ok", "statusCode", "latencyMs",
            "trigger", "webhookSent", "webhookOk", "webhookError", "errorMessage", "createdAt"
@@ -571,7 +752,7 @@ export const db = {
       );
 
       // Conserve les 500 derniers pings maximum pour éviter tout gonflement SQLite
-      sql().run(
+      await run(
         `DELETE FROM "MonitorPingLog" WHERE "id" NOT IN (
            SELECT "id" FROM "MonitorPingLog" ORDER BY "createdAt" DESC LIMIT 500
          )`
@@ -602,11 +783,11 @@ export const db = {
       const gte = args?.where?.createdAt?.gte;
 
       const rows = gte
-        ? sql().all<Record<string, unknown>>(
+        ? await all<Record<string, unknown>>(
             `SELECT * FROM "MonitorPingLog" WHERE "createdAt" >= ? ORDER BY "createdAt" ${dir} LIMIT ?`,
             [gte.toISOString(), limit]
           )
-        : sql().all<Record<string, unknown>>(
+        : await all<Record<string, unknown>>(
             `SELECT * FROM "MonitorPingLog" ORDER BY "createdAt" ${dir} LIMIT ?`,
             [limit]
           );
@@ -615,7 +796,7 @@ export const db = {
     },
 
     async deleteMany(): Promise<void> {
-      sql().run(`DELETE FROM "MonitorPingLog"`);
+      await run(`DELETE FROM "MonitorPingLog"`);
     },
   },
 
@@ -623,10 +804,11 @@ export const db = {
     return Promise.all(operations);
   },
 
-  $ping(): { ok: boolean; latencyMs: number } {
+  async $ping(): Promise<{ ok: boolean; latencyMs: number; driver: DbDriver }> {
     const start = performance.now();
-    const res = sql().get<{ ok: number }>(`SELECT 1 AS ok`);
+    const { adapter, info } = await state();
+    const res = await adapter.get<{ ok: number }>(`SELECT 1 AS ok`);
     const latencyMs = Math.max(0, Math.round((performance.now() - start) * 100) / 100);
-    return { ok: res?.ok === 1, latencyMs };
+    return { ok: Number(res?.ok) === 1, latencyMs, driver: info.driver };
   },
 };

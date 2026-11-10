@@ -1,17 +1,24 @@
 import "server-only";
 
-import { revalidatePath, revalidateTag, unstable_cache } from "next/cache";
+import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { planSchema, securityOfferSchema, serviceCardSchema } from "@/lib/content-schema";
+import {
+  caseStudiesSchema,
+  planSchema,
+  securityOfferSchema,
+  serviceCardSchema,
+} from "@/lib/content-schema";
 import {
   DEFAULT_BUNDLE,
+  DEFAULT_CASE_STUDIES,
   DEFAULT_PLANS,
   DEFAULT_RECURRING,
   DEFAULT_SECURITY_OFFERS,
   DEFAULT_WEB_OPTIONS,
 } from "@/lib/content-defaults";
 import type {
+  CaseStudy,
   ContentBundle,
   Plan,
   SecurityOffer,
@@ -20,13 +27,22 @@ import type {
 
 /**
  * Contenu éditable du site via le Dashboard.
- * Mis en cache mémoire Next.js (`unstable_cache`) pour un rendu instantané (< 1 ms)
- * et invalidé immédiatement à chaque sauvegarde (`revalidateTag` + `revalidatePath`).
+ *
+ * Stratégie de cache volontairement simple et indépendante du runtime
+ * (Node ou Bun, `next dev` ou build standalone) :
+ * - les pages publiques qui consomment ce contenu sont rendues à la demande
+ *   (`export const dynamic = "force-dynamic"`) ;
+ * - la lecture SQLite (< 1 ms) est mémorisée au niveau du processus et le mémo
+ *   est invalidé **de façon synchrone** à chaque sauvegarde — la publication
+ *   depuis le Dashboard est donc visible dès la requête suivante, sans dépendre
+ *   de l'invalidation du cache ISR de Next.js (`revalidateTag` / `revalidatePath`),
+ *   qui s'est révélée peu fiable selon l'hébergeur.
  */
 
-export type { ContentBundle, Plan, SecurityOffer, ServiceCard };
+export type { CaseStudy, ContentBundle, Plan, SecurityOffer, ServiceCard };
 export {
   DEFAULT_BUNDLE,
+  DEFAULT_CASE_STUDIES,
   DEFAULT_PLANS,
   DEFAULT_RECURRING,
   DEFAULT_SECURITY_OFFERS,
@@ -38,7 +54,18 @@ const KEYS = {
   securityOffers: "security_offers",
   webOptions: "web_options",
   recurring: "recurring",
+  caseStudies: "case_studies",
 } as const;
+
+/** Pages publiques dont le rendu dépend du contenu éditable. */
+export const CONTENT_PATHS = ["/", "/web", "/security", "/tarifs", "/realisations"] as const;
+
+/** Filet de sécurité : relecture forcée en base au-delà de ce délai. */
+const MEMO_TTL_MS = 60_000;
+
+const globalForContent = globalThis as unknown as {
+  __4urContentMemo?: { bundle: ContentBundle; at: number };
+};
 
 function readSection<S extends z.ZodTypeAny>(
   byKey: Map<string, string>,
@@ -84,6 +111,12 @@ async function readContentBundleUncached(): Promise<ContentBundle> {
         z.array(serviceCardSchema).length(3),
         DEFAULT_RECURRING
       ),
+      caseStudies: readSection(
+        byKey,
+        KEYS.caseStudies,
+        caseStudiesSchema,
+        DEFAULT_CASE_STUDIES
+      ),
     };
   } catch (err) {
     console.error("[content] lecture impossible, valeurs par défaut:", err);
@@ -91,15 +124,18 @@ async function readContentBundleUncached(): Promise<ContentBundle> {
   }
 }
 
-const getCachedBundle = unstable_cache(
-  readContentBundleUncached,
-  ["site-content-bundle"],
-  { tags: ["site-content"], revalidate: 300 }
-);
+/** Vide le mémo processus : la prochaine lecture repart de la base. */
+export function invalidateContentCache(): void {
+  globalForContent.__4urContentMemo = undefined;
+}
 
-/** Lecture rapide mise en cache pour les pages publiques. */
+/** Lecture rapide (mémo processus) pour les pages publiques. */
 export async function getContentBundle(): Promise<ContentBundle> {
-  return getCachedBundle();
+  const memo = globalForContent.__4urContentMemo;
+  if (memo && Date.now() - memo.at < MEMO_TTL_MS) return memo.bundle;
+  const bundle = await readContentBundleUncached();
+  globalForContent.__4urContentMemo = { bundle, at: Date.now() };
+  return bundle;
 }
 
 /** Lecture directe non cachée pour l'éditeur du Dashboard. */
@@ -107,13 +143,14 @@ export async function getContentBundleFresh(): Promise<ContentBundle> {
   return readContentBundleUncached();
 }
 
-/** Sauvegarde le bundle complet et invalide instantanément le cache des pages publiques. */
+/** Sauvegarde le bundle complet et rend la publication visible immédiatement. */
 export async function saveContentBundle(bundle: ContentBundle): Promise<void> {
   const entries: [string, unknown][] = [
     [KEYS.plans, bundle.plans],
     [KEYS.securityOffers, bundle.securityOffers],
     [KEYS.webOptions, bundle.webOptions],
     [KEYS.recurring, bundle.recurring],
+    [KEYS.caseStudies, bundle.caseStudies],
   ];
 
   await db.$transaction(
@@ -126,8 +163,16 @@ export async function saveContentBundle(bundle: ContentBundle): Promise<void> {
     )
   );
 
-  revalidateTag("site-content", { expire: 0 });
-  revalidatePath("/web");
-  revalidatePath("/security");
-  revalidatePath("/tarifs");
+  // 1) Invalidation synchrone du mémo : effective dès la requête suivante.
+  invalidateContentCache();
+
+  // 2) Ceinture et bretelles : on purge aussi le cache de routes Next.js
+  //    (sans jamais faire échouer la sauvegarde si l'API n'est pas disponible).
+  for (const path of CONTENT_PATHS) {
+    try {
+      revalidatePath(path);
+    } catch (err) {
+      console.warn(`[content] revalidatePath(${path}) ignoré :`, err);
+    }
+  }
 }

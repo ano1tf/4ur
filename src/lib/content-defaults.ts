@@ -6,6 +6,10 @@
  * cartes de tarifs) et finirait sinon dans le bundle navigateur.
  */
 
+import { DEFAULT_CASE_STUDIES, type CaseStudy } from "@/lib/case-studies";
+
+export type { CaseStudy };
+
 export interface Plan {
   name: string;
   price: string;
@@ -34,6 +38,8 @@ export interface ContentBundle {
   securityOffers: SecurityOffer[];
   webOptions: ServiceCard[];
   recurring: ServiceCard[];
+  /** Études de cas affichées sur /realisations et en sélection sur l'accueil. */
+  caseStudies: CaseStudy[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -168,5 +174,8 @@ export const DEFAULT_BUNDLE: ContentBundle = {
   securityOffers: DEFAULT_SECURITY_OFFERS,
   webOptions: DEFAULT_WEB_OPTIONS,
   recurring: DEFAULT_RECURRING,
+  caseStudies: DEFAULT_CASE_STUDIES,
 };
+
+export { DEFAULT_CASE_STUDIES };
 

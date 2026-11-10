@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { PageHeader } from "@/components/site/page-header";
 import { PortfolioShowcase } from "@/components/site/portfolio-showcase";
 import { CtaBanner } from "@/components/site/cta-banner";
+import { getContentBundle } from "@/lib/content";
 
 export const metadata: Metadata = {
   title: "Réalisations — études de cas web & cybersécurité",
@@ -9,7 +10,15 @@ export const metadata: Metadata = {
     "Découvrez nos architectures sur mesure en production : sites haute conversion, portails financiers durcis, e-commerce protégé et audits d'intrusion.",
 };
 
-export default function RealisationsPage() {
+/**
+ * Rendu à la demande : les réalisations sont gérées depuis le Dashboard et
+ * doivent apparaître dès la requête suivante (voir `src/lib/content.ts`).
+ */
+export const dynamic = "force-dynamic";
+
+export default async function RealisationsPage() {
+  const { caseStudies } = await getContentBundle();
+
   return (
     <>
       <PageHeader
@@ -20,7 +29,7 @@ export default function RealisationsPage() {
         watermark="OEUVRES"
       />
 
-      <PortfolioShowcase />
+      <PortfolioShowcase items={caseStudies} />
 
       <CtaBanner
         title="Votre prochain site mérite"

@@ -17,6 +17,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
+/**
+ * Rendu à la demande : les tarifs sont publiés depuis le Dashboard et doivent
+ * apparaître dès la requête suivante (voir `src/lib/content.ts`).
+ */
+export const dynamic = "force-dynamic";
+
 export async function generateMetadata(): Promise<Metadata> {
   const { plans } = await getContentBundle();
   const recap = plans.map((p) => `${p.name} ${p.price}`).join(", ");

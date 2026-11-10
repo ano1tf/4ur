@@ -96,7 +96,7 @@ SQLite est donc recréée au démarrage :
 
 | Donnée | Durable ? | Comment la rendre durable |
 |---|---|---|
-| **Prix / offres** (table `SiteContent`) | ❌ repart des valeurs par défaut | Modifiez `src/lib/content-defaults.ts` (versionné, c'est la source de vérité) **ou** utilisez *Exporter* / *Importer* dans le panneau dev après un redémarrage |
+| **Prix / offres / réalisations** (table `SiteContent`) | ❌ repart des valeurs par défaut | Modifiez `src/lib/content-defaults.ts` / `src/lib/case-studies.ts` (versionnés, c'est la source de vérité) **ou** utilisez *Exporter* / *Importer* dans le panneau dev après un redémarrage |
 | **Demandes de contact** (table `ContactRequest`) | ❌ effacées | Configurez `CONTACT_WEBHOOK_URL` (Slack/Discord/Make) ou `RESEND_API_KEY` + `CONTACT_NOTIFY_EMAIL` : la notification part à l'envoi, avant même l'écriture en base |
 | Pages, textes, design | ✅ dans Git | — |
 | Contenu édité depuis le panneau dev | ⚠️ jusqu'au prochain redémarrage | Bouton *Exporter* → fichier JSON → *Importer* après redémarrage |
@@ -143,6 +143,7 @@ src/
     page.tsx              Accueil
     web/ security/        Pôles détaillés
     tarifs/               Grille tarifaire + comparatif
+    realisations/         Galerie des études de cas (éditable depuis le Dashboard)
     methode/              Méthode en 4 étapes
     contact/              Formulaire
     mentions-legales/     Mentions légales
@@ -157,8 +158,9 @@ src/
   components/ui/          shadcn/ui (8 composants conservés)
   lib/
     content-defaults.ts   Types + valeurs par défaut (importable côté client)
+    case-studies.ts       Réalisations par défaut + helpers (slug, catégories, dégradés)
     content-schema.ts     Schémas Zod du contenu
-    content.ts            Lecture/écriture du contenu (serveur uniquement)
+    content.ts            Lecture/écriture du contenu + mémo processus (serveur uniquement)
     db.ts                 Client Prisma paresseux (serveur uniquement)
     dev-auth.ts           PIN, session signée HMAC
     rate-limit.ts         Limitation de débit (IP + plafond global)
@@ -172,10 +174,18 @@ src/
   clavier hors champ de saisie.
 - Accès : code `DEV_PANEL_PIN`, puis session signée 12 h (cookie `httpOnly`,
   `SameSite=Strict`).
-- Onglets : Formules Web, Offres Sécurité, Options Web, Services récurrents, **Demandes**
-  (les messages reçus, avec suppression).
-- « Enregistrer » publie immédiatement (les pages publiques sont en `force-dynamic`) ;
-  « Défauts » restaure la grille d'origine ; l'icône ⏻ ferme la session.
+- Onglet **Contenu & Tarifs** : Formules Web, Offres Sécurité, Options Web, Services
+  récurrents et **Réalisations** (ajout, modification, duplication, réordonnancement et
+  suppression des études de cas — les 3 premières sont reprises sur l'accueil).
+  Onglet **Demandes** : les messages reçus, avec suppression.
+- « Enregistrer » publie immédiatement : les pages `/`, `/web`, `/security`, `/tarifs`
+  et `/realisations` sont rendues à la demande (`force-dynamic`, `Cache-Control: no-store`)
+  et lisent un mémo processus invalidé de façon synchrone à chaque sauvegarde — aucune
+  dépendance à l'invalidation du cache ISR de Next.js (qui s'était révélée inopérante
+  sur certains runtimes). « Défauts » restaure la grille d'origine ; l'icône ⏻ ferme la
+  session.
+- Export / Import JSON : l'export contient désormais les réalisations ; un ancien export
+  (sans `caseStudies`) reste importable, la liste actuelle est alors conservée.
 
 ## Sécurité
 

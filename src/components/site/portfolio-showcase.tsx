@@ -1,28 +1,36 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, Layers, ShieldCheck, X } from "lucide-react";
-import { CASE_STUDIES, type CaseCategory, type CaseStudy } from "@/lib/case-studies";
+import { CASE_CATEGORIES, type CaseCategory, type CaseStudy } from "@/lib/case-studies";
 import { SpotlightCard } from "./spotlight-card";
 import { ActionButton } from "./action-button";
 import { cn } from "@/lib/utils";
 
-const FILTERS: { id: "all" | CaseCategory; label: string }[] = [
-  { id: "all", label: "Toutes les études (6)" },
-  { id: "web", label: "Ingénierie Web" },
-  { id: "security", label: "Cybersécurité" },
-  { id: "saas", label: "SaaS & Plateformes" },
-];
-
-export function PortfolioShowcase() {
+export function PortfolioShowcase({ items = [] }: { items?: CaseStudy[] }) {
   const [filter, setFilter] = useState<"all" | CaseCategory>("all");
   const [selected, setSelected] = useState<CaseStudy | null>(null);
 
+  /* Filtres : « Toutes » + uniquement les disciplines réellement représentées. */
+  const filters = useMemo<{ id: "all" | CaseCategory; label: string }[]>(
+    () => [
+      {
+        id: "all",
+        label: `Toutes les études (${items.length})`,
+      },
+      ...CASE_CATEGORIES.filter((c) => items.some((item) => item.category === c.id)).map(
+        (c) => ({ id: c.id, label: c.label })
+      ),
+    ],
+    [items]
+  );
+
+  const activeFilter = filters.some((f) => f.id === filter) ? filter : "all";
   const visible =
-    filter === "all"
-      ? CASE_STUDIES
-      : CASE_STUDIES.filter((item) => item.category === filter);
+    activeFilter === "all"
+      ? items
+      : items.filter((item) => item.category === activeFilter);
 
   return (
     <section className="section-beam relative py-20 sm:py-28">
@@ -33,8 +41,8 @@ export function PortfolioShowcase() {
           role="tablist"
           aria-label="Filtrer par discipline"
         >
-          {FILTERS.map((f) => {
-            const active = filter === f.id;
+          {filters.map((f) => {
+            const active = activeFilter === f.id;
             return (
               <button
                 key={f.id}
@@ -61,6 +69,11 @@ export function PortfolioShowcase() {
         </div>
 
         {/* Grille d'études de cas */}
+        {items.length === 0 && (
+          <p className="mt-12 rounded-2xl border border-dashed border-white/[0.12] p-10 text-center text-sm text-muted-foreground">
+            Nos prochaines études de cas arrivent bientôt.
+          </p>
+        )}
         <div className="mt-12 grid gap-6 md:grid-cols-2">
           <AnimatePresence mode="popLayout">
             {visible.map((study) => (
